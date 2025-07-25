@@ -14,6 +14,7 @@ calc_css95_uM <- function(cas) {
   params <- parameterize_pbtk(
     chem.cas             = cas,
     species              = "Human",
+    model                = "3compartmentss",
     default.to.human     = TRUE,        # 결손 ADME → 인간 평균 대체
     force.human.clint.fub= TRUE,        # 인간 Clint·fup 강제 사용
     class.exclude        = FALSE,
