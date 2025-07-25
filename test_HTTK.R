@@ -1,94 +1,49 @@
-#!/usr/bin/env Rscript
-# =====================================================================
-# HTTK tutorial – BPA (CAS 80-05-7) full pipeline with non‐uniform TK distribution
-# 1) load packages
-# 2) identify chemical
-# 3) parameterize & adjust
-# 4) run 1-compartment & PBTK models
-# 5) Monte Carlo Css: mg/day scenario
-# 6) Monte Carlo Css: manual TK parameter sampling
-# 7) IVIVE (95% AED)
-# 8) summary & histogram + density
-# =====================================================================
-
+# 1) HTTK 로드 및 버전 체크
 library(httk)
-library(ggplot2)
+stopifnot(packageVersion("httk") >= "2.7.0")  # HTTK 2.7 이상 필수
 
-# 1) identify chemical
-chem.cas <- get_chem_id(chem.cas = "80-05-7")$chem.cas
+# 2) 재현성 확보
+set.seed(20250725)
 
-# 2) parameterize & adjust
-params <- parameterize_pbtk(chem.cas = chem.cas, species = "Human", suppress.messages = TRUE)
-if (is.na(params$Funbound.plasma) || params$Funbound.plasma == 0) params$Funbound.plasma <- 0.03
-if (is.na(params$Clint)           || params$Clint == 0)           params$Clint           <- 1.2
+# 3) 계산 대상 CAS 리스트
+chem.cas <- c("101-86-0", "106-22-9", "127-51-5", "91-64-5")
 
-# 3-A) 1-compartment model
-sim1 <- solve_1comp(dose = 10, interval = 24, n.doses = 5, params = params, chem.cas = chem.cas)
-plot(sim1, main = "1-Compartment Plasma Concentration")
+# 4) 95th Percentile Css 계산 함수
+calc_css95_uM <- function(cas) {
+  # A) PBTK 파라미터 초기화
+  params <- parameterize_pbtk(
+    chem.cas             = cas,
+    species              = "Human",
+    model                = "3compartmentss",
+    default.to.human     = TRUE,        # 결손 ADME → 인간 평균 대체 :contentReference[oaicite:7]{index=7}
+    force.human.clint.fub= TRUE,        # 인간 Clint·fup 강제 사용 :contentReference[oaicite:8]{index=8}
+    class.exclude        = FALSE,       # 모델 클래스 필터 해제 :contentReference[oaicite:9]{index=9}
+    physchem.exclude     = FALSE,       # 물성 도메인 필터 해제 :contentReference[oaicite:10]{index=10}
+    suppress.messages    = TRUE
+  )
+  
+  # B) Monte Carlo 샘플링
+  mc.params <- create_mc_samples(
+    parameters = params,
+    samples    = 1000,                 # 1000개 샘플 생성 
+    model      = "pbtk",
+    suppress.messages = TRUE
+  )
+  
+  # C) Css 분포 계산 (1 mg/kg/day, mg/L)
+  css.dist_mgL <- calc_mc_css(
+    parameters   = mc.params,
+    model        = "pbtk",
+    daily.dose   = 1,
+    output.units = "mg/L"
+  )
+  
+  # D) 95th 백분위수 & µM 환산
+  css95_mgL <- quantile(css.dist_mgL, probs = 0.95)
+  mw        <- get_physchem_param(param = "MW", chem.cas = cas)  # g/mol :contentReference[oaicite:12]{index=12}
+  css95_mgL * 1000 / mw                                          # mg/L → µM
+}
 
-# 3-B) PBTK model
-sim_pbtk <- solve_pbtk(
-  parameters    = params,
-  days          = 7,
-  daily.dose    = 10,
-  doses.per.day = 1,
-  tsteps        = 2,
-  output.units  = "mg/L"
-)
-plot(sim_pbtk, which = "Cplasma", main = "PBTK Plasma Concentration")
-
-# 5) Monte Carlo Css: mg/day scenario
-pop       <- httkpop_generate(method = "vi", nsamp = 1000)
-weights   <- pop$BW
-css_mgday <- vapply(weights, function(w) {
-  tmp    <- params; tmp$BW <- w
-  sim    <- solve_1comp(dose = 10, interval = 24, n.doses = 1, params = tmp, chem.cas = chem.cas)
-  max(sim[ , "Ccompartment"])
-}, numeric(1))
-MW        <- 228.29                          # g/mol
-css_mgday <- css_mgday * (MW / 1000)         # µM → mg/L
-med_mgday <- median(css_mgday)
-
-# 6) Monte Carlo Css: manual TK parameter sampling
-set.seed(123)
-n         <- 1000
-# sample fu and Clint with 30% CV
-fu_samp   <- rnorm(n, mean = params$Funbound.plasma, sd = params$Funbound.plasma * 0.3)
-cl_samp   <- rnorm(n, mean = params$Clint,            sd = params$Clint * 0.3)
-css_tk    <- mapply(function(fu, cl) {
-  tmp <- params
-  tmp$Funbound.plasma <- max(fu, 1e-6)
-  tmp$Clint           <- max(cl, 1e-6)
-  sim <- solve_1comp(dose = 10, interval = 24, n.doses = 1, params = tmp, chem.cas = chem.cas)
-  max(sim[ , "Ccompartment"])
-}, fu_samp, cl_samp)
-css_tk    <- css_tk * (MW / 1000)
-med_tk    <- median(css_tk)
-
-# 7) IVIVE – 95% AED
-aed95 <- calc_mc_oral_equiv(
-  chem.cas       = chem.cas,
-  conc           = 10,
-  samples        = 1000,
-  which.quantile = 0.95
-)
-
-# 8) summary & histogram + density
-cat("\n===== Results Summary =====\n",
-    "* Css mg/day median:       ", round(med_mgday, 3), "mg/L\n",
-    "* Css TK sampling median:  ", round(med_tk,     3), "mg/L\n",
-    "* 95% AED:                 ", round(aed95,      3), "mg/kg/day\n")
-
-df <- data.frame(
-  Css      = c(css_mgday, css_tk),
-  Scenario = rep(c("mg/day", "TK sampling"), each = n)
-)
-
-ggplot(df, aes(x = Css, fill = Scenario)) +
-  geom_histogram(aes(y = ..density..), position = "identity", alpha = 0.5, bins = 50) +
-  geom_density(size = 1) +
-  geom_vline(xintercept = c(med_mgday, med_tk), linetype = "dashed", color = c("blue", "red")) +
-  labs(title = "Css Distribution Comparison – BPA",
-       x     = "Css (mg/L)",
-       y     = "Density") +
-  theme_minimal()
+# 5) 배치 실행 및 결과 출력
+results <- sapply(chem.cas, calc_css95_uM)
+data.frame(CAS = chem.cas, Css95_uM = round(results, 3))
