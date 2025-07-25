@@ -14,22 +14,21 @@ calc_css95_uM <- function(cas) {
   params <- parameterize_pbtk(
     chem.cas             = cas,
     species              = "Human",
-    model                = "3compartmentss",
-    default.to.human     = TRUE,        # 결손 ADME → 인간 평균 대체 :contentReference[oaicite:7]{index=7}
-    force.human.clint.fub= TRUE,        # 인간 Clint·fup 강제 사용 :contentReference[oaicite:8]{index=8}
-    class.exclude        = FALSE,       # 모델 클래스 필터 해제 :contentReference[oaicite:9]{index=9}
-    physchem.exclude     = FALSE,       # 물성 도메인 필터 해제 :contentReference[oaicite:10]{index=10}
+    default.to.human     = TRUE,        # 결손 ADME → 인간 평균 대체
+    force.human.clint.fub= TRUE,        # 인간 Clint·fup 강제 사용
+    class.exclude        = FALSE,
+    physchem.exclude     = FALSE,
     suppress.messages    = TRUE
   )
-  
+
   # B) Monte Carlo 샘플링
   mc.params <- create_mc_samples(
     parameters = params,
-    samples    = 1000,                 # 1000개 샘플 생성 
+    samples    = 1000,                 # 1000개 샘플 생성
     model      = "pbtk",
     suppress.messages = TRUE
   )
-  
+
   # C) Css 분포 계산 (1 mg/kg/day, mg/L)
   css.dist_mgL <- calc_mc_css(
     parameters   = mc.params,
@@ -37,13 +36,13 @@ calc_css95_uM <- function(cas) {
     daily.dose   = 1,
     output.units = "mg/L"
   )
-  
+
   # D) 95th 백분위수 & µM 환산
   css95_mgL <- quantile(css.dist_mgL, probs = 0.95)
-  mw        <- get_physchem_param(param = "MW", chem.cas = cas)  # g/mol :contentReference[oaicite:12]{index=12}
+  mw        <- get_physchem_param(param = "MW", chem.cas = cas, default.to.human = TRUE)  # g/mol
   css95_mgL * 1000 / mw                                          # mg/L → µM
 }
 
 # 5) 배치 실행 및 결과 출력
 results <- sapply(chem.cas, calc_css95_uM)
-data.frame(CAS = chem.cas, Css95_uM = round(results, 3))
+print(data.frame(CAS = chem.cas, Css95_uM = round(results, 3)))
